@@ -17,12 +17,10 @@ else()
     MESSAGE(STATUS "Using OpenCV3")
 endif()
 
-find_package(Eigen3 REQUIRED)
 find_package(Ceres REQUIRED)
 
 include_directories(
  ${PROJECT_SOURCE_DIR}/include
- ${EIGEN3_INCLUDE_DIR}
  ${CERES_INCLUDE_DIRS}
 )
 

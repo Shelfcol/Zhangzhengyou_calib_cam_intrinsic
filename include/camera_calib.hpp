@@ -1,8 +1,6 @@
 #pragma once
 #include <ceres/ceres.h>
 #include "ceres/rotation.h"
-#include <eigen3/Eigen/Core>
-#include <eigen3/Eigen/Geometry>
 #include <iostream>
 #include <string>
 #include <vector>
