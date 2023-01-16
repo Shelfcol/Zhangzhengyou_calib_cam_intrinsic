@@ -25,8 +25,10 @@ bool CamIntrCalib::CalibrateWithCv()
         cv::Mat dist_coef;
         cv::calibrateCamera(corner_3d_vec, points_2d_vec_, cv::Size(points_per_col_, points_per_row_),
                             K, dist_coef, rvecs, tvecs, CV_CALIB_FIX_K3 | CV_CALIB_ZERO_TANGENT_DIST);
-        std::cout << "opencv calib K:" << K.at<double>(0, 0) << " " << K.at<double>(1, 1) << " " << K.at<double>(0, 2) << " " << K.at<double>(1, 2) << std::endl;
-        std::cout << "opencv calib dist_coeff:" << dist_coef.at<double>(0, 0) << " " << dist_coef.at<double>(1, 0) << std::endl;
+        std::cout << "opencv calib K:\n"
+                  << K << std::endl;
+        std::cout << "opencv calib dist_coeff:\n"
+                  << dist_coef << std::endl;
         double reproj_err = 0;
         int p_num = 0;
         std::vector<std::vector<cv::Point2f>> calibrated_2d_points;
@@ -37,7 +39,7 @@ bool CamIntrCalib::CalibrateWithCv()
                               dist_coef, points_2d);
             for (size_t j = 0; j < corner_3d_vec[i].size(); ++j)
             {
-                const cv::Point2f &reproj_p = points_2d[i];
+                const cv::Point2f &reproj_p = points_2d[j];
                 const cv::Point2f &origin_p = points_2d_vec_[i][j];
                 reproj_err += sqrt((origin_p.x - reproj_p.x) * (origin_p.x - reproj_p.x) + (origin_p.y - reproj_p.y) * (origin_p.y - reproj_p.y));
                 ++p_num;
@@ -47,14 +49,14 @@ bool CamIntrCalib::CalibrateWithCv()
         reproj_err /= static_cast<double>(p_num);
         std::cout << "reproject error with opencv:" << reproj_err << std::endl;
 
-// #ifdef DEBUG_CODE
+#ifdef DEBUG_CODE
         for (size_t i = 0; i < ori_pics_.size(); ++i)
         {
             cv::drawChessboardCorners(ori_pics_[i], cv::Size(points_per_row_, points_per_col_), calibrated_2d_points[i], true);
             cv::imshow("Validate opencv ", ori_pics_[i]);
-            cv::waitKey(800);
+            cv::waitKey();
         }
-// #endif
+#endif
 
         return true;
     }
@@ -68,16 +70,14 @@ bool CamIntrCalib::Calibrate()
     {
         CalcH();
         // CalcHWithCV();
-        ValidateH();
+        // ValidateH();
 
         CalcK();
         CalcT();
         CalcDistCoeff();
         std::cout << "reproject error before ceres optimizing:" << std::endl;
         CalcRepjErr();
-
         Optimize();
-        CalcDistCoeff();
         std::cout << "reproject error after ceres optimizing:" << std::endl;
         CalcRepjErr();
         return true;
@@ -145,12 +145,12 @@ bool CamIntrCalib::GetKeyPoints()
             cv::TermCriteria::EPS + cv::TermCriteria::MAX_ITER, 30, 0.001);
         cv::cornerSubPix(calib_pic, corner_pts, cv::Size(11, 11), cv::Size(-1, -1),
                          criteria);
-#ifdef DEBUG_CODE
-        // 角点绘制
-        cv::drawChessboardCorners(calib_pic, cv::Size(points_per_row_, points_per_col_), corner_pts, found_flag);
-        cv::imshow("chessboard corner image", calib_pic);
-        cv::waitKey(300);
-#endif
+        // #ifdef DEBUG_CODE
+        //         // 角点绘制
+        //         cv::drawChessboardCorners(calib_pic, cv::Size(points_per_row_, points_per_col_), corner_pts, found_flag);
+        //         cv::imshow("chessboard corner image", calib_pic);
+        //         cv::waitKey(300);
+        // #endif
         points_2d_vec_.push_back(std::move(corner_pts));
     }
 
@@ -572,16 +572,19 @@ void CamIntrCalib::Optimize()
     options.minimizer_progress_to_stdout = true;
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
-    std::cout << "origin K:" << K_.at<double>(0, 0) << " " << K_.at<double>(1, 1) << " " << K_.at<double>(0, 2) << " " << K_.at<double>(1, 2) << std::endl;
-    std::cout << "origin dist_coeff:" << dist_coef_.at<double>(0, 0) << " " << dist_coef_.at<double>(1, 0) << std::endl;
+    std::cout << "origin K:\n"
+              << K_ << std::endl;
+    std::cout << "origin dist_coeff\n:" << dist_coef_ << std::endl;
     K_.at<double>(0, 0) = *(K_para + 0);
     K_.at<double>(1, 1) = *(K_para + 1);
     K_.at<double>(0, 2) = *(K_para + 2);
     K_.at<double>(1, 2) = *(K_para + 3);
     dist_coef_.at<double>(0, 0) = *(coeff_para + 0);
     dist_coef_.at<double>(1, 0) = *(coeff_para + 1);
-    std::cout << "optimize K:" << K_.at<double>(0, 0) << " " << K_.at<double>(1, 1) << " " << K_.at<double>(0, 2) << " " << K_.at<double>(1, 2) << std::endl;
-    std::cout << "optimize dist_coeff:" << dist_coef_.at<double>(0, 0) << " " << dist_coef_.at<double>(1, 0) << std::endl;
+    std::cout << "ceres optimize K:\n"
+              << K_ << std::endl;
+    std::cout << "ceres optimize dist_coeff:\n"
+              << dist_coef_ << std::endl;
 
     // update R_vec, t_vec
     for (size_t i = 0; i < R_vec_.size(); ++i)
