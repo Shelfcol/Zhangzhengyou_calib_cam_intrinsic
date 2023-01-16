@@ -1,8 +1,69 @@
 #include "camera_calib.hpp"
 // #define DEBUG_CODE
 #define USE_CV
+
+CamIntrCalib::CamIntrCalib(const std::string &pic_path, const int points_per_row,
+                           const int points_per_col,
+                           const double square_size) : pic_path_(pic_path),
+                                                       points_per_row_(points_per_row),
+                                                       points_per_col_(points_per_col),
+                                                       square_size_(square_size)
+{
+    K_ = cv::Mat::eye(3, 3, CV_64F);
+    dist_coef_ = cv::Mat::zeros(4, 1, CV_64F);
+}
+
+bool CamIntrCalib::CalibrateWithCv()
+{
+    std::cout << "Calibrate with opencv" << std::endl;
+    if (ReadPics() && GetKeyPoints())
+    {
+        std::vector<std::vector<cv::Point3f>> corner_3d_vec;
+        Transform2dTo3dPts(points_3d_vec_, &corner_3d_vec);
+        std::vector<cv::Mat> rvecs, tvecs;
+        cv::Mat K;
+        cv::Mat dist_coef;
+        cv::calibrateCamera(corner_3d_vec, points_2d_vec_, cv::Size(points_per_col_, points_per_row_),
+                            K, dist_coef, rvecs, tvecs, CV_CALIB_FIX_K3 | CV_CALIB_ZERO_TANGENT_DIST);
+        std::cout << "opencv calib K:" << K.at<double>(0, 0) << " " << K.at<double>(1, 1) << " " << K.at<double>(0, 2) << " " << K.at<double>(1, 2) << std::endl;
+        std::cout << "opencv calib dist_coeff:" << dist_coef.at<double>(0, 0) << " " << dist_coef.at<double>(1, 0) << std::endl;
+        double reproj_err = 0;
+        int p_num = 0;
+        std::vector<std::vector<cv::Point2f>> calibrated_2d_points;
+        for (size_t i = 0; i < corner_3d_vec.size(); ++i)
+        {
+            std::vector<cv::Point2f> points_2d;
+            cv::projectPoints(corner_3d_vec[i], rvecs[i], tvecs[i], K,
+                              dist_coef, points_2d);
+            for (size_t j = 0; j < corner_3d_vec[i].size(); ++j)
+            {
+                const cv::Point2f &reproj_p = points_2d[i];
+                const cv::Point2f &origin_p = points_2d_vec_[i][j];
+                reproj_err += sqrt((origin_p.x - reproj_p.x) * (origin_p.x - reproj_p.x) + (origin_p.y - reproj_p.y) * (origin_p.y - reproj_p.y));
+                ++p_num;
+            }
+            calibrated_2d_points.push_back(points_2d);
+        }
+        reproj_err /= static_cast<double>(p_num);
+        std::cout << "reproject error with opencv:" << reproj_err << std::endl;
+
+// #ifdef DEBUG_CODE
+        for (size_t i = 0; i < ori_pics_.size(); ++i)
+        {
+            cv::drawChessboardCorners(ori_pics_[i], cv::Size(points_per_row_, points_per_col_), calibrated_2d_points[i], true);
+            cv::imshow("Validate opencv ", ori_pics_[i]);
+            cv::waitKey(800);
+        }
+// #endif
+
+        return true;
+    }
+    return false;
+}
+
 bool CamIntrCalib::Calibrate()
 {
+    std::cout << "Calibrate with Zhangzhengyou" << std::endl;
     if (ReadPics() && GetKeyPoints())
     {
         CalcH();
@@ -12,14 +73,21 @@ bool CamIntrCalib::Calibrate()
         CalcK();
         CalcT();
         CalcDistCoeff();
-        Optimize();
+        std::cout << "reproject error before ceres optimizing:" << std::endl;
+        CalcRepjErr();
 
+        Optimize();
+        CalcDistCoeff();
+        std::cout << "reproject error after ceres optimizing:" << std::endl;
+        CalcRepjErr();
         return true;
     }
     return false;
 }
 bool CamIntrCalib::ReadPics()
 {
+    calib_pics_.clear();
+    ori_pics_.clear();
     for (int i = 0; i <= 40; ++i)
     {
         std::string single_picture_path = pic_path_ + "/" + std::to_string(i + 100000) + ".png";
@@ -36,11 +104,13 @@ bool CamIntrCalib::ReadPics()
         calib_pics_.push_back(pic);
         ori_pics_.push_back(pic);
     }
-
+    std::cout << "ReadPics succeed" << std::endl;
     return true;
 }
 bool CamIntrCalib::GetKeyPoints()
 {
+    points_3d_vec_.clear();
+    points_2d_vec_.clear();
     // world points
     for (size_t i = 0; i < calib_pics_.size(); ++i)
     {
@@ -84,6 +154,7 @@ bool CamIntrCalib::GetKeyPoints()
         points_2d_vec_.push_back(std::move(corner_pts));
     }
 
+    std::cout << "GetKeyPoints succeed" << std::endl;
     return true;
 }
 void CamIntrCalib::Normalize(const std::vector<cv::Point2f> &point_vec,
@@ -179,9 +250,9 @@ void CamIntrCalib::CalcH()
         cv::invert(norm_T_2d, norm_T_2d_inv);
         H = norm_T_2d_inv * H * norm_T_3d;
         H_vec_.push_back(H);
-        std::cout << "H:\n"
-                  << H << std::endl;
-        std::cout << "L2 norm: " << cv::norm(H) << std::endl;
+        // std::cout << "H:\n"
+        //           << H << std::endl;
+        // std::cout << "L2 norm: " << cv::norm(H) << std::endl;
     }
 }
 
@@ -194,9 +265,9 @@ void CamIntrCalib::CalcHWithCV()
 
         cv::Mat H = cv::findHomography(points_3d, points_2d);
         H_vec_.push_back(H);
-        std::cout << "H:\n"
-                  << H << std::endl;
-        std::cout << "L2 norm: " << cv::norm(H) << std::endl;
+        // std::cout << "H:\n"
+        //           << H << std::endl;
+        // std::cout << "L2 norm: " << cv::norm(H) << std::endl;
     }
 }
 
@@ -219,7 +290,7 @@ void CamIntrCalib::ValidateH()
             double s = H.at<double>(2, 0) * p_3d.x + H.at<double>(2, 1) * p_3d.y + H.at<double>(2, 2);
             rep_p.x = (H.at<double>(0, 0) * p_3d.x + H.at<double>(0, 1) * p_3d.y + H.at<double>(0, 2)) / s;
             rep_p.y = (H.at<double>(1, 0) * p_3d.x + H.at<double>(1, 1) * p_3d.y + H.at<double>(1, 2)) / s;
-            std::cout << "(u,v): (" << p_2d.x << ", " << p_2d.y << "); (u',v'): (" << rep_p.x << ", " << rep_p.y << ")" << std::endl;
+            // std::cout << "(u,v): (" << p_2d.x << ", " << p_2d.y << "); (u',v'): (" << rep_p.x << ", " << rep_p.y << ")" << std::endl;
             reproject_err += (fabs(p_2d.x - rep_p.x) + fabs(p_2d.y - rep_p.y));
             pts_num++;
             corner_pts.emplace_back(rep_p);
@@ -266,18 +337,18 @@ void CamIntrCalib::CalcK()
     //           << A << std::endl;
     cv::Mat U, W, VT;              // A =UWV^T
     cv::SVD::compute(A, W, U, VT); // Eigen 返回的是V,列向量就是特征向量, opencv 返回的是VT，所以行向量是特征向量
-    std::cout << "VT:\n"
-              << VT << std::endl;
+    // std::cout << "VT:\n"
+    //           << VT << std::endl;
     cv::Mat B = VT.row(5);
-    std::cout << "B:\n"
-              << B << std::endl;
+    // std::cout << "B:\n"
+    //           << B << std::endl;
     double B11 = B.at<double>(0, 0);
     double B12 = B.at<double>(0, 1);
     double B22 = B.at<double>(0, 2);
     double B13 = B.at<double>(0, 3);
     double B23 = B.at<double>(0, 4);
     double B33 = B.at<double>(0, 5);
-    std::cout << "B: " << B11 << "," << B12 << "," << B22 << "," << B13 << "," << B23 << "," << B33 << std::endl;
+    // std::cout << "B: " << B11 << "," << B12 << "," << B22 << "," << B13 << "," << B23 << "," << B33 << std::endl;
 
     double v0 = (B12 * B13 - B11 * B23) / (B11 * B22 - B12 * B12);
     double lambda = B33 - (B13 * B13 + v0 * (B12 * B13 - B11 * B23)) / B11;
@@ -442,12 +513,12 @@ void CamIntrCalib::Optimize()
     int pic_num = points_3d_vec_.size();
     int every_pic_p_num = points_3d_vec_[0].size();
     double *K_para = new double[4];
-    *K_para = K_.at<double>(0, 0);
+    *(K_para + 0) = K_.at<double>(0, 0);
     *(K_para + 1) = K_.at<double>(1, 1);
     *(K_para + 2) = K_.at<double>(0, 2);
     *(K_para + 3) = K_.at<double>(1, 2);
     double *coeff_para = new double[2];
-    *coeff_para = dist_coef_.at<double>(0, 0);
+    *(coeff_para + 0) = dist_coef_.at<double>(0, 0);
     *(coeff_para + 1) = dist_coef_.at<double>(1, 0);
     double *cam_para = new double[6 * pic_num];
     double *point = new double[3 * pic_num * every_pic_p_num];
@@ -503,12 +574,114 @@ void CamIntrCalib::Optimize()
     ceres::Solve(options, &problem, &summary);
     std::cout << "origin K:" << K_.at<double>(0, 0) << " " << K_.at<double>(1, 1) << " " << K_.at<double>(0, 2) << " " << K_.at<double>(1, 2) << std::endl;
     std::cout << "origin dist_coeff:" << dist_coef_.at<double>(0, 0) << " " << dist_coef_.at<double>(1, 0) << std::endl;
-    K_.at<double>(0, 0) = *(K_para);
+    K_.at<double>(0, 0) = *(K_para + 0);
     K_.at<double>(1, 1) = *(K_para + 1);
     K_.at<double>(0, 2) = *(K_para + 2);
     K_.at<double>(1, 2) = *(K_para + 3);
-    dist_coef_.at<double>(0, 0) = *(coeff_para);
+    dist_coef_.at<double>(0, 0) = *(coeff_para + 0);
     dist_coef_.at<double>(1, 0) = *(coeff_para + 1);
     std::cout << "optimize K:" << K_.at<double>(0, 0) << " " << K_.at<double>(1, 1) << " " << K_.at<double>(0, 2) << " " << K_.at<double>(1, 2) << std::endl;
     std::cout << "optimize dist_coeff:" << dist_coef_.at<double>(0, 0) << " " << dist_coef_.at<double>(1, 0) << std::endl;
+
+    // update R_vec, t_vec
+    for (size_t i = 0; i < R_vec_.size(); ++i)
+    {
+        double *T_para = cam_para + 6 * i;
+        cv::Mat R_rid = cv::Mat::zeros(3, 1, CV_64F);
+        R_rid.at<double>(0, 0) = *(T_para + 0);
+        R_rid.at<double>(1, 0) = *(T_para + 1);
+        R_rid.at<double>(2, 0) = *(T_para + 2);
+        cv::Mat opt_R;
+        cv::Rodrigues(R_rid, opt_R);
+        R_vec_[i] = opt_R;
+        t_vec_[i].at<double>(0, 0) = *(T_para + 3);
+        t_vec_[i].at<double>(1, 0) = *(T_para + 4);
+        t_vec_[i].at<double>(2, 0) = *(T_para + 5);
+    }
+}
+
+void CamIntrCalib::Transform2dTo3dPts(const std::vector<std::vector<cv::Point2f>> &points_3d_vec,
+                                      std::vector<std::vector<cv::Point3f>> *points_3ds)
+{
+    points_3ds->clear();
+    for (size_t i = 0; i < points_3d_vec_.size(); ++i)
+    {
+        std::vector<cv::Point3f> corner_3ds;
+        for (const auto &p : points_3d_vec_[i])
+        {
+            cv::Point3f p_3d;
+            p_3d.x = p.x;
+            p_3d.y = p.y;
+            p_3d.z = 0;
+            corner_3ds.push_back(p_3d);
+        }
+        points_3ds->push_back(std::move(corner_3ds));
+    }
+}
+double CamIntrCalib::CalcDiff(const std::vector<cv::Point2f> &points_2d_vec1,
+                              const std::vector<cv::Point2f> &points_2d_vec2)
+{
+    double reproj_err = 0;
+    int p_num = 0;
+    for (size_t i = 0; i < points_2d_vec1.size(); ++i)
+    {
+        reproj_err += fabs(points_2d_vec1[i].x - points_2d_vec2[i].x);
+        reproj_err += fabs(points_2d_vec1[i].y - points_2d_vec2[i].y);
+        p_num++;
+    }
+    reproj_err /= static_cast<double>(2 * p_num);
+    return reproj_err;
+}
+
+cv::Point2f CamIntrCalib::ReprojectPoint(const cv::Point3f &p_3d, const cv::Mat &R, const cv::Mat &t,
+                                         const cv::Mat &K, const double k1, const double k2)
+{
+    cv::Mat p = cv::Mat(3, 1, CV_64F);
+    p.at<double>(0, 0) = p_3d.x;
+    p.at<double>(1, 0) = p_3d.y;
+    p.at<double>(2, 0) = p_3d.z;
+    cv::Mat trans_p = R * p + t;
+    double x = trans_p.at<double>(0, 0) / trans_p.at<double>(2, 0);
+    double y = trans_p.at<double>(1, 0) / trans_p.at<double>(2, 0);
+
+    double r2 = x * x + y * y;
+
+    const double alpha = K.at<double>(0, 0);
+    const double beta = K.at<double>(1, 1);
+    const double u0 = K.at<double>(0, 2);
+    const double v0 = K.at<double>(1, 2);
+
+    double x_dist = x * (1 + k1 * r2 + k2 * r2 * r2);
+    double y_dist = y * (1 + k1 * r2 + k2 * r2 * r2);
+
+    const double u_dist = alpha * x_dist + u0;
+    const double v_dist = beta * y_dist + v0;
+    cv::Point2f p_dist;
+    p_dist.x = u_dist;
+    p_dist.y = v_dist;
+    return p_dist;
+}
+
+double CamIntrCalib::CalcRepjErr()
+{
+    double reproj_err = 0;
+    int p_num = 0;
+    for (size_t i = 0; i < points_3d_vec_.size(); ++i)
+    {
+        for (size_t j = 0; j < points_3d_vec_[i].size(); ++j)
+        {
+            cv::Point3f p;
+            p.x = points_3d_vec_[i][j].x;
+            p.y = points_3d_vec_[i][j].y;
+            p.z = 0;
+            cv::Point2f reproj_p = ReprojectPoint(p, R_vec_[i], t_vec_[i],
+                                                  K_, dist_coef_.at<double>(0, 0), dist_coef_.at<double>(1, 0));
+            const cv::Point2f origin_p = points_2d_vec_[i][j];
+            reproj_err += sqrt((origin_p.x - reproj_p.x) * (origin_p.x - reproj_p.x) + (origin_p.y - reproj_p.y) * (origin_p.y - reproj_p.y));
+            ++p_num;
+        }
+    }
+    reproj_err /= static_cast<double>(p_num);
+    std::cout << "reprojection error: " << reproj_err << std::endl;
+    return reproj_err;
 }

@@ -1,8 +1,8 @@
 #pragma once
 #include <ceres/ceres.h>
 #include "ceres/rotation.h"
-#include<eigen3/Eigen/Core>
-#include<eigen3/Eigen/Geometry>
+#include <eigen3/Eigen/Core>
+#include <eigen3/Eigen/Geometry>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -12,15 +12,9 @@ class CamIntrCalib
 public:
     explicit CamIntrCalib(const std::string &pic_path, const int points_per_row,
                           const int points_per_col,
-                          const double square_size) : pic_path_(pic_path),
-                                                      points_per_row_(points_per_row),
-                                                      points_per_col_(points_per_col),
-                                                      square_size_(square_size)
-    {
-        K_ = cv::Mat::eye(3, 3, CV_64F);
-        dist_coef_ = cv::Mat::zeros(4, 1, CV_64F);
-    }
+                          const double square_size);
     bool Calibrate();
+    bool CalibrateWithCv();
     bool ReadPics();
     bool GetKeyPoints();
     void CalcH();
@@ -30,9 +24,16 @@ public:
     void CalcT();
     void CalcDistCoeff();
     void Optimize();
+    void Transform2dTo3dPts(const std::vector<std::vector<cv::Point2f>> &points_3d_vec,
+                            std::vector<std::vector<cv::Point3f>> *points_3ds);
     void Normalize(const std::vector<cv::Point2f> &point_vec,
                    std::vector<cv::Point2f> *normed_point_vec,
                    cv::Mat *norm_T);
+    cv::Point2f ReprojectPoint(const cv::Point3f &p_3d, const cv::Mat &R, const cv::Mat &t,
+                               const cv::Mat &K, const double k1, const double k2);
+    double CalcRepjErr();
+    double CalcDiff(const std::vector<cv::Point2f> &points_2d_vec1,
+                    const std::vector<cv::Point2f> &points_2d_vec2);
     struct ReprojErr;
 
 private:
