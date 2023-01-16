@@ -112,6 +112,7 @@ bool CamIntrCalib::GetKeyPoints()
     points_3d_vec_.clear();
     points_2d_vec_.clear();
     // world points
+    // 世界坐标系的点只要是一行一行的即可，而每幅图都会有一个对应的外参
     for (size_t i = 0; i < calib_pics_.size(); ++i)
     {
         std::vector<cv::Point2f> points_3ds;
@@ -459,15 +460,16 @@ void CamIntrCalib::CalcDistCoeff()
 struct CamIntrCalib::ReprojErr
 {
 public:
-    ReprojErr(const cv::Point2f &observe_p_2d_)
-        : observe_p_2d(observe_p_2d_) {}
+    ReprojErr(const cv::Point2f &observe_p_2d_, const cv::Point2f &world_p_3d_)
+        : observe_p_2d(observe_p_2d_), world_p_3d(world_p_3d_) {}
     template <typename T>
-    bool operator()(const T *const camera, const T *const point, const T *const K, const T *const dist_coeff, T *residual) const
+    bool operator()(const T *const camera, const T *const K, const T *const dist_coeff, T *residual) const
     {
-        // ！！！ camera传入的并不是6*1的矩阵，只是取前面6个元素
+        //! camera传入的并不是6*1的矩阵，只是取前面6个元素
         //  camera[0,1,2] are the angle-axis rotation.
+        T p_3d[3] = {static_cast<T>(world_p_3d.x), static_cast<T>(world_p_3d.y), static_cast<T>(0)};
         T p[3];
-        ceres::AngleAxisRotatePoint(camera, point, p);
+        ceres::AngleAxisRotatePoint(camera, p_3d, p);
         // camera[3,4,5] are the translation.
         p[0] += camera[3];
         p[1] += camera[4];
@@ -497,21 +499,21 @@ public:
         residual[1] = v_dist - static_cast<T>(observe_p_2d.y);
         return true;
     }
-
-    static ceres::CostFunction *Create(const cv::Point2f &observe_p_2d_)
+    // 工厂函数，避免重复创建和析构实例
+    static ceres::CostFunction *Create(const cv::Point2f &observe_p_2d_, const cv::Point2f &world_p_3d_)
     {
-        return new ceres::AutoDiffCostFunction<ReprojErr, 2, 6, 3, 4, 2>(new ReprojErr(observe_p_2d_));
+        return new ceres::AutoDiffCostFunction<ReprojErr, 2, 6, 4, 2>(new ReprojErr(observe_p_2d_, world_p_3d_));
     }
 
 private:
     const cv::Point2f observe_p_2d;
+    const cv::Point2f world_p_3d;
 };
 
 void CamIntrCalib::Optimize()
 {
     ceres::Problem problem;
     int pic_num = points_3d_vec_.size();
-    int every_pic_p_num = points_3d_vec_[0].size();
     double *K_para = new double[4];
     *(K_para + 0) = K_.at<double>(0, 0);
     *(K_para + 1) = K_.at<double>(1, 1);
@@ -521,9 +523,6 @@ void CamIntrCalib::Optimize()
     *(coeff_para + 0) = dist_coef_.at<double>(0, 0);
     *(coeff_para + 1) = dist_coef_.at<double>(1, 0);
     double *cam_para = new double[6 * pic_num];
-    double *point = new double[3 * pic_num * every_pic_p_num];
-    int pic_index = 0;
-    int point_index = 0;
     for (int i = 0; i < pic_num; ++i)
     {
         const cv::Mat &R = R_vec_[i];
@@ -531,40 +530,25 @@ void CamIntrCalib::Optimize()
         cv::Mat angle_axis;
         cv::Rodrigues(R, angle_axis);
 
-        *(cam_para + 6 * pic_index) = angle_axis.at<double>(0, 0);
-        *(cam_para + 6 * pic_index + 1) = angle_axis.at<double>(1, 0);
-        *(cam_para + 6 * pic_index + 2) = angle_axis.at<double>(2, 0);
-        *(cam_para + 6 * pic_index + 3) = t.at<double>(0, 0);
-        *(cam_para + 6 * pic_index + 4) = t.at<double>(1, 0);
-        *(cam_para + 6 * pic_index + 5) = t.at<double>(2, 0);
-
-        const std::vector<cv::Point2f> &points_3ds = points_3d_vec_[i];
-        for (size_t j = 0; j < points_3ds.size(); ++j)
-        {
-            *(point + 3 * point_index) = points_3ds[j].x;
-            *(point + 3 * point_index + 1) = points_3ds[j].y;
-            *(point + 3 * point_index + 2) = 0;
-            ++point_index;
-        }
-        ++pic_index;
+        *(cam_para + 6 * i + 0) = angle_axis.at<double>(0, 0);
+        *(cam_para + 6 * i + 1) = angle_axis.at<double>(1, 0);
+        *(cam_para + 6 * i + 2) = angle_axis.at<double>(2, 0);
+        *(cam_para + 6 * i + 3) = t.at<double>(0, 0);
+        *(cam_para + 6 * i + 4) = t.at<double>(1, 0);
+        *(cam_para + 6 * i + 5) = t.at<double>(2, 0);
     }
 
-    pic_index = 0;
-    point_index = 0;
     for (int i = 0; i < pic_num; ++i)
     {
         const std::vector<cv::Point2f> &points_3ds = points_3d_vec_[i];
         const std::vector<cv::Point2f> &points_2ds = points_2d_vec_[i];
         for (size_t j = 0; j < points_3ds.size(); ++j)
         {
-            double *cam_para_now = cam_para + 6 * pic_index;
-            double *point_now = point + 3 * point_index;
+            double *cam_para_now = cam_para + 6 * i;
             ceres::CostFunction *cost_function =
-                ReprojErr::Create(points_2ds[j]);
-            problem.AddResidualBlock(cost_function, nullptr, cam_para_now, point_now, K_para, coeff_para);
-            ++point_index;
+                ReprojErr::Create(points_2ds[j], points_3ds[j]);
+            problem.AddResidualBlock(cost_function, nullptr, cam_para_now, K_para, coeff_para);
         }
-        ++pic_index;
     }
 
     ceres::Solver::Options options;
